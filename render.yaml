@@ -1,117 +1,237 @@
+# Fixing NeuralForge Deployment Issues on Render.com
+
+## Critical discovery: Repository access issue
+
+The specific repository "NeuralForge" by user "daggerfall666" at https://github.com/daggerfall666/NeuralForge **does not exist or is not publicly accessible**. This could indicate the repository is private, the username/repository name is incorrect, or it has been deleted/renamed.
+
+However, based on your error description, I can provide comprehensive solutions for the typical Node.js/React/Vite deployment issues you're experiencing.
+
+## Understanding the build failure pattern
+
+Your error logs indicate a **classic dependency resolution issue** where:
+- `npm install` succeeds (installs dependencies)
+- `vite build` fails with "@vitejs/plugin-react not found"
+- Node.js 24.2.0 is being used
+- Project has client/server structure with separate build commands
+
+This pattern typically occurs when **@vitejs/plugin-react is in devDependencies but NODE_ENV=production prevents installation**.
+
+## Immediate fixes for the Vite plugin error
+
+### Fix 1: Move critical dependencies to production dependencies
+
+```json
+{
+  "dependencies": {
+    "react": "^18.2.0",
+    "react-dom": "^18.2.0",
+    "@vitejs/plugin-react": "^4.2.1",
+    "vite": "^5.1.0"
+  },
+  "devDependencies": {
+    "@types/react": "^18.2.0",
+    "@types/react-dom": "^18.2.0",
+    "typescript": "^5.0.0"
+  }
+}
+```
+
+**Critical insight**: For production builds on cloud platforms, Vite and its plugins should be in `dependencies`, not `devDependencies`.
+
+### Fix 2: Force clean installation in build process
+
+```yaml
+# In render.yaml
+buildCommand: |
+  rm -rf node_modules package-lock.json
+  npm install --include=dev
+  npm run build:prod
+```
+
+### Fix 3: Node.js version compatibility
+
+Your Node.js 24.2.0 may have compatibility issues. **Downgrade to Node.js 20.x for better stability**:
+
+```json
+{
+  "engines": {
+    "node": ">=20.0.0 <21.0.0",
+    "npm": ">=8.0.0"
+  }
+}
+```
+
+## Complete render.yaml configuration
+
+Based on your project structure with client/server architecture and the build commands mentioned:
+
+```yaml
+services:
+  # React Frontend (Static Site)
+  - type: web
+    name: neuralforge-frontend
+    runtime: static
+    buildCommand: |
+      npm install --include=dev
+      npm run build:client
+    staticPublishPath: ./client/dist
+    routes:
+      - type: rewrite
+        source: /*
+        destination: /index.html
+    envVars:
+      - key: VITE_API_URL
+        fromService:
+          name: neuralforge-backend
+          type: web
+          property: url
+      - key: NODE_ENV
+        value: production
+    buildFilter:
+      paths:
+        - client/**/*
+        - package.json
+        - package-lock.json
+      ignoredPaths:
+        - "**/*.test.js"
+        - "**/*.spec.js"
+        - "**/README.md"
+
+  # Node.js Backend
+  - type: web
+    name: neuralforge-backend
+    runtime: node
+    buildCommand: |
+      npm install --include=dev
+      npm run build:server:nocheck
+    startCommand: npm start
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: PORT
+        value: 10000
+      - key: FRONTEND_URL
+        fromService:
+          name: neuralforge-frontend
+          type: web
+          property: url
+    buildFilter:
+      paths:
+        - server/**/*
+        - package.json
+        - package-lock.json
+
+# Optional: Database if your app requires one
+databases:
+  - name: neuralforge-db
+    databaseName: neuralforge
+    user: neuralforge_user
+    plan: starter
+```
+
+## Alternative single-service configuration
+
+If your project serves the React build from the Node.js server:
+
+```yaml
 services:
   - type: web
-    name: autoagent-mf
-    runtime: docker
-    repo: https://github.com/daggerfall666/AutoAgent_MF
-    dockerfilePath: ./Dockerfile
-    port: 12346
-    envVars:
-      - key: COMPLETION_MODEL
-        value: claude-3-5-sonnet-20241022
-      - key: DEBUG
-        value: false
-      - key: FN_CALL
-        value: ""
-      - key: API_BASE_URL
-        value: ""
-      - key: GITHUB_AI_TOKEN
-        fromSecret: github_ai_token
-      - key: OPENAI_API_KEY
-        fromSecret: openai_api_key
-      - key: ANTHROPIC_API_KEY
-        fromSecret: anthropic_api_key
-      - key: DEEPSEEK_API_KEY
-        fromSecret: deepseek_api_key
-      - key: GEMINI_API_KEY
-        fromSecret: gemini_api_key
-      - key: HUGGINGFACE_API_KEY
-        fromSecret: huggingface_api_key
-      - key: GROQ_API_KEY
-        fromSecret: groq_api_key
-      - key: XAI_API_KEY
-        fromSecret: xai_api_key
-      - key: MISTRAL_API_KEY
-        fromSecret: mistral_api_key
-      - key: OPENROUTER_API_KEY
-        fromSecret: openrouter_api_key
+    name: neuralforge-fullstack
+    runtime: node
     buildCommand: |
-      # Instalar Docker se não estiver disponível
-      if ! command -v docker &> /dev/null; then
-        curl -fsSL https://get.docker.com -o get-docker.sh
-        sh get-docker.sh
-      fi
-      
-      # Instalar dependências Python
-      pip install -e .
-      
-      # Verificar se o Docker daemon está a correr
-      service docker start || true
-    startCommand: |
-      # Iniciar o serviço principal do AutoAgent
-      auto main --port 12346 --container_name autoagent_render
-    healthCheckPath: /health
-    
-  # Serviço alternativo para modo Deep Research apenas
-  - type: web
-    name: autoagent-deep-research
-    runtime: docker
-    repo: https://github.com/daggerfall666/AutoAgent_MF
-    dockerfilePath: ./Dockerfile
-    port: 12347
+      npm install --include=dev
+      npm run build:client
+      npm run build:server:nocheck
+    startCommand: npm start
     envVars:
-      - key: COMPLETION_MODEL
-        value: claude-3-5-sonnet-20241022
-      - key: DEBUG
-        value: false
-      - key: ANTHROPIC_API_KEY
-        fromSecret: anthropic_api_key
-      - key: OPENAI_API_KEY
-        fromSecret: openai_api_key
-    buildCommand: |
-      pip install -e .
-    startCommand: |
-      auto deep-research --port 12347 --container_name deepresearch_render
-    healthCheckPath: /health
-    
-# Dockerfile alternativo se não existir no repositório
-dockerfile: |
-  FROM python:3.11-slim
-  
-  # Instalar dependências do sistema
-  RUN apt-get update && apt-get install -y \
-      git \
-      docker.io \
-      curl \
-      build-essential \
-      && rm -rf /var/lib/apt/lists/*
-  
-  # Criar directório de trabalho
-  WORKDIR /app
-  
-  # Copiar ficheiros do projecto
-  COPY . .
-  
-  # Instalar dependências Python
-  RUN pip install --no-cache-dir -e .
-  
-  # Expor porta
-  EXPOSE 12346
-  
-  # Comando por defeito
-  CMD ["auto", "main", "--port", "12346"]
+      - key: NODE_ENV
+        value: production
+      - key: PORT
+        value: 10000
+    buildFilter:
+      paths:
+        - client/**/*
+        - server/**/*
+        - package.json
+        - package-lock.json
+```
 
-# Configurações adicionais
-databases:
-  # Se precisar de base de dados para vector storage
-  - name: autoagent-vectordb
-    plan: starter
-    
-# Cron jobs para limpeza periódica
-jobs:
-  - type: cron
-    name: cleanup-containers
-    schedule: "0 2 * * *"  # Todos os dias às 2h
-    dockerfilePath: ./Dockerfile
-    shellCommand: |
-      # Limpar containers Docker antigos
-      docker system prune -f
+## Vite configuration optimization
+
+Ensure your `client/vite.config.ts` is properly configured:
+
+```typescript
+import { defineConfig } from 'vite'
+import react from '@vitejs/plugin-react'
+
+export default defineConfig({
+  plugins: [react()],
+  build: {
+    outDir: 'dist',
+    assetsDir: 'assets',
+    sourcemap: false,
+    rollupOptions: {
+      output: {
+        manualChunks: undefined
+      }
+    }
+  },
+  optimizeDeps: {
+    include: ['react', 'react-dom']
+  }
+})
+```
+
+## Package.json script recommendations
+
+Structure your build scripts to handle the client/server pattern:
+
+```json
+{
+  "scripts": {
+    "build:client": "cd client && npm install && vite build",
+    "build:server": "cd server && npm install && tsc",
+    "build:server:nocheck": "cd server && npm install && tsc --noCheck",
+    "build:prod": "npm run build:client && npm run build:server:nocheck",
+    "start": "cd server && node dist/index.js",
+    "dev": "concurrently \"npm run dev:client\" \"npm run dev:server\"",
+    "dev:client": "cd client && vite",
+    "dev:server": "cd server && npm run dev"
+  }
+}
+```
+
+## CORS configuration for service communication
+
+If using separate services, configure CORS in your backend:
+
+```javascript
+// server/src/index.js
+const cors = require('cors');
+
+app.use(cors({
+  origin: [
+    'https://neuralforge-frontend.onrender.com',
+    'http://localhost:5173' // Vite dev server
+  ],
+  credentials: true
+}));
+```
+
+## Troubleshooting checklist
+
+1. **Verify repository access**: Confirm the GitHub repository is public or provide access credentials
+2. **Check package.json**: Ensure @vitejs/plugin-react is in dependencies, not devDependencies
+3. **Node.js version**: Use Node.js 20.x instead of 24.x for compatibility
+4. **Clean installation**: Clear caches and reinstall dependencies during build
+5. **Environment variables**: Ensure VITE_ prefix for client-side variables
+6. **Build commands**: Verify build:client and build:server scripts exist and work locally
+
+## Next steps
+
+1. **Verify repository access** - Confirm the correct repository URL or access permissions
+2. **Test locally** - Run the build commands locally to identify specific dependency issues  
+3. **Update dependencies** - Move Vite and plugins to production dependencies
+4. **Deploy incrementally** - Start with single service configuration, then separate if needed
+
+This configuration addresses the specific Vite plugin issues you described while providing a robust deployment foundation for Node.js/React applications on Render.com. The key insight is that cloud platforms require build tools in production dependencies, unlike local development environments.
